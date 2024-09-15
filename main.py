@@ -1,15 +1,11 @@
 import os
 from whoosh import index, fields, writing
-from whoosh.analysis import (
-    StemmingAnalyzer, CharsetFilter, RegexTokenizer, 
-    LowercaseFilter, StopFilter, StandardAnalyzer
-)
+from whoosh.analysis import RegexTokenizer, LowercaseFilter, StopFilter, CharsetFilter
 from whoosh.lang.porter import stem
 from whoosh.qparser import MultifieldParser
 from whoosh.support.charset import default_charset, charset_table_to_dict
 import PyPDF2
 import docx
-from docx.document import Document as DocxDocument
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 import openpyxl
 from PIL import Image
@@ -17,6 +13,10 @@ import pytesseract
 import io
 import logging
 import unicodedata
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 def create_custom_analyzer():
     # Create a custom tokenizer that keeps dots within words
@@ -163,8 +163,8 @@ def search_documents(index_obj, query_string):
         return search_results
 
 def main():
-    doc_dir = "/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported"
-    index_dir = "./index"
+    doc_dir = os.getenv('DOC_DIR')
+    index_dir = os.getenv('INDEX_DIR')
     
     schema = create_schema()
     if not os.path.exists(index_dir):
