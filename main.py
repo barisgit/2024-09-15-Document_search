@@ -1,7 +1,6 @@
 import os
 from whoosh import index, fields, writing
-from whoosh.analysis import RegexTokenizer, LowercaseFilter, StopFilter, CharsetFilter
-from whoosh.lang.porter import stem
+from whoosh.analysis import RegexTokenizer, LowercaseFilter, StopFilter, CharsetFilter, StemmingAnalyzer
 from whoosh.qparser import MultifieldParser
 from whoosh.support.charset import default_charset, charset_table_to_dict
 import PyPDF2
@@ -14,13 +13,14 @@ import io
 import logging
 import unicodedata
 from dotenv import load_dotenv
+from stemmers.slo import stem
 
 # Load environment variables
 load_dotenv()
 
 def create_custom_analyzer():
-    # Create a custom tokenizer that keeps dots within words
-    my_tokenizer = RegexTokenizer(r"\w+(?:[-'.]\w+)*|[^\w\s]+")
+    pattern = r'\w+|\d+|[^\w\s]+'
+    my_analyzer = StemmingAnalyzer(expression=pattern, stemfn=stem)
     
     # Create a custom charset filter that preserves diacritical marks
     charset_table = charset_table_to_dict(default_charset)
@@ -33,7 +33,7 @@ def create_custom_analyzer():
     
     # Create a custom analyzer
     custom_analyzer = (
-        my_tokenizer |
+        my_analyzer |
         charset_filter |
         LowercaseFilter() |
         StopFilter()
