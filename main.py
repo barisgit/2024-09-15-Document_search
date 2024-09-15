@@ -1,9 +1,9 @@
 import os
 from whoosh import index
-from whoosh.fields import Schema, TEXT, ID, STORED
+from whoosh.fields import Schema, TEXT, ID
+from whoosh.analysis import StemmingAnalyzer, CharsetFilter
 from whoosh.qparser import MultifieldParser
-from whoosh.analysis import StemmingAnalyzer
-from whoosh.query import Or
+from whoosh.support.charset import accent_map
 import PyPDF2
 import docx
 from docx.document import Document as DocxDocument
@@ -13,12 +13,18 @@ from PIL import Image
 import pytesseract
 import io
 
+def create_custom_analyzer():
+    analyzer = StemmingAnalyzer()
+    analyzer |= CharsetFilter(accent_map)
+    return analyzer
+
 def create_schema():
-    stem_ana = StemmingAnalyzer()
+    custom_ana = create_custom_analyzer()
     return Schema(
         path=ID(stored=True),
-        filename=TEXT(stored=True, analyzer=stem_ana),
-        content=TEXT(stored=True, analyzer=stem_ana)
+        filename=TEXT(stored=True, analyzer=custom_ana),
+        extension=TEXT(stored=True, analyzer=custom_ana),
+        content=TEXT(stored=True, analyzer=custom_ana)
     )
 
 def create_index(schema, index_dir):
@@ -61,7 +67,6 @@ def extract_word(file_path):
     
     return text + " " + image_text
 
-
 def extract_excel(file_path):
     wb = openpyxl.load_workbook(file_path, data_only=True)
     text = ""
@@ -78,39 +83,36 @@ def index_documents(index_obj, doc_dir):
     for root, _, files in os.walk(doc_dir):
         for file in files:
             file_path = os.path.join(root, file)
+            filename, extension = os.path.splitext(file)
             content = extract_text(file_path)
             if content:  # Only index if we successfully extracted content
                 writer.add_document(
                     path=file_path,
-                    filename=file,
+                    filename=filename,
+                    extension=extension,
                     content=content
                 )
     writer.commit()
 
 def search_documents(index_obj, query_string):
-    try:
-        with index_obj.searcher() as searcher:
-            query_parser = MultifieldParser(["filename", "content"], schema=index_obj.schema)
-            query = query_parser.parse(query_string)
-            results = searcher.search(query, limit=None)
-            
-            print(f"Number of results: {len(results)}")  # Diagnostic print
-            
-            search_results = []
-            for result in results:
-                highlights = result.highlights("content") or result.highlights("filename") or "No highlights available"
-                search_results.append({
-                    "path": result["path"],
-                    "filename": result["filename"],
-                    "highlights": highlights,
-                    "score": result.score
-                })
-            
-            return search_results
-    except Exception as e:
-        print(f"An error occurred during search: {str(e)}")
-        return []
-
+    with index_obj.searcher() as searcher:
+        query_parser = MultifieldParser(["filename", "extension", "content"], schema=index_obj.schema)
+        query = query_parser.parse(query_string)
+        results = searcher.search(query, limit=None)
+        
+        print(f"Number of results: {len(results)}")
+        
+        search_results = []
+        for result in results:
+            highlights = result.highlights("content") or result.highlights("filename") or result.highlights("extension") or "No highlights available"
+            search_results.append({
+                "path": result["path"],
+                "filename": result["filename"] + result["extension"],
+                "highlights": highlights,
+                "score": result.score
+            })
+        
+        return search_results
 
 def main():
     doc_dir = "/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported"
@@ -130,7 +132,7 @@ def main():
         query = input("Enter your search query (or 'q' to quit): ")
         if query.lower() == 'q':
             break
-        print(f"Searching for: {query}")  # Diagnostic print
+        print(f"Searching for: {query}")
         results = search_documents(index_obj, query)
         if results:
             for result in results:
