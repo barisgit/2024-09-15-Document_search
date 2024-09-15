@@ -1,5 +1,5 @@
 import os
-from whoosh import index, fields
+from whoosh import index, fields, writing
 from whoosh.analysis import (
     StemmingAnalyzer, CharsetFilter, RegexTokenizer, 
     LowercaseFilter, StopFilter, StandardAnalyzer
@@ -115,8 +115,11 @@ def extract_excel(file_path):
 def extract_image(file_path):
     return pytesseract.image_to_string(Image.open(file_path))
 
-def index_documents(index_obj, doc_dir):
+def index_documents(index_obj, doc_dir, delete=False):
     writer = index_obj.writer()
+    if delete:
+        writer.commit(mergetype=writing.CLEAR)
+        writer = index_obj.writer()
     for root, _, files in os.walk(doc_dir):
         for file in files:
             file_path = os.path.join(root, file)
@@ -124,27 +127,19 @@ def index_documents(index_obj, doc_dir):
             content = extract_text(file_path)
             if content:  # Only index if we successfully extracted content
                 print(f"Indexing: {file_path}")
-                print(f"Content: {content[:50]}")
-                print(f"Filename: {filename}")
-                writer.add_document(
-                    path=f"{file_path}",
-                    filename=f"{filename}",
-                    extension=f"{extension}",
-                    content=f"{content}"
-                )
+                #print(f"Content: {content[:50]}")
+                #print(f"Filename: {filename}")
                 
-    writer.add_document(
-        path="/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported/2021-05-06 - 2021-05-06 - Test.pdf",
-        filename="čisto",
-        extension=".pdf",
-        content="This is a test document. čestitke čokolada"
-    )
-    writer.add_document(
-        path="/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported/2021-05-06 - 2021-05-06 - Test.pdf",
-        filename="Atijeva borovničeva torta",
-        extension=".pdf",
-        content="This is a test document. čestitke čokolada"
-    )
+                # Normalize the text to NFC form
+                normalized_content = unicodedata.normalize('NFC', content)
+                normalized_filename = unicodedata.normalize('NFC', filename)
+                
+                writer.add_document(
+                    path=file_path,
+                    filename=normalized_filename,
+                    extension=extension,
+                    content=normalized_content
+                )
     writer.commit()
 
 def search_documents(index_obj, query_string):
@@ -179,12 +174,10 @@ def main():
         index_documents(index_obj, doc_dir)
         print("Indexing complete.")
     else:
-        os.rmdir(index_dir)
-        os.mkdir(index_dir)
         index_obj = index.create_in(index_dir, schema)
         # Re-index the documents with the new analyzer
         print("Re-indexing documents with updated analyzer...")
-        index_documents(index_obj, doc_dir)
+        index_documents(index_obj, doc_dir, True)
         print("Re-indexing complete.")
     
     while True:
