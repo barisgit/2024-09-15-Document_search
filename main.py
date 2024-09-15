@@ -34,6 +34,7 @@ def create_custom_analyzer():
     # Create a custom analyzer
     custom_analyzer = (
         my_tokenizer |
+        charset_filter |
         LowercaseFilter() |
         StopFilter()
     )
