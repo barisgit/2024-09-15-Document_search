@@ -1,9 +1,12 @@
 import os
-from whoosh import index
-from whoosh.fields import Schema, TEXT, ID
-from whoosh.analysis import StemmingAnalyzer, CharsetFilter
+from whoosh import index, fields
+from whoosh.analysis import (
+    StemmingAnalyzer, CharsetFilter, RegexTokenizer, 
+    LowercaseFilter, StopFilter, StandardAnalyzer
+)
+from whoosh.lang.porter import stem
 from whoosh.qparser import MultifieldParser
-from whoosh.support.charset import accent_map
+from whoosh.support.charset import default_charset, charset_table_to_dict
 import PyPDF2
 import docx
 from docx.document import Document as DocxDocument
@@ -12,19 +15,38 @@ import openpyxl
 from PIL import Image
 import pytesseract
 import io
+import logging
+import unicodedata
 
 def create_custom_analyzer():
-    analyzer = StemmingAnalyzer()
-    analyzer |= CharsetFilter(accent_map)
-    return analyzer
+    # Create a custom tokenizer that keeps dots within words
+    my_tokenizer = RegexTokenizer(r"\w+(?:[-'.]\w+)*|[^\w\s]+")
+    
+    # Create a custom charset filter that preserves diacritical marks
+    charset_table = charset_table_to_dict(default_charset)
+    
+    # Remove mappings for č, š, and ž to preserve them
+    for char in 'čšžČŠŽ':
+        charset_table.pop(ord(char), None)
+    
+    charset_filter = CharsetFilter(charset_table)
+    
+    # Create a custom analyzer
+    custom_analyzer = (
+        my_tokenizer |
+        LowercaseFilter() |
+        StopFilter()
+    )
+    
+    return custom_analyzer
 
 def create_schema():
     custom_ana = create_custom_analyzer()
-    return Schema(
-        path=ID(stored=True),
-        filename=TEXT(stored=True, analyzer=custom_ana),
-        extension=TEXT(stored=True, analyzer=custom_ana),
-        content=TEXT(stored=True, analyzer=custom_ana)
+    return fields.Schema(
+        path=fields.ID(stored=True),
+        filename=fields.TEXT(stored=True, analyzer=custom_ana),
+        extension=fields.TEXT(stored=True, analyzer=custom_ana),
+        content=fields.TEXT(stored=True, analyzer=custom_ana)
     )
 
 def create_index(schema, index_dir):
@@ -32,18 +54,33 @@ def create_index(schema, index_dir):
         os.mkdir(index_dir)
     return index.create_in(index_dir, schema)
 
-def extract_text(file_path):
+def extract_text(file_path: str) -> str:
     _, ext = os.path.splitext(file_path.lower())
-    if ext == '.pdf':
-        return extract_pdf(file_path)
-    elif ext in ['.docx', '.doc']:
-        return extract_word(file_path)
-    elif ext in ['.xlsx', '.xls']:
-        return extract_excel(file_path)
-    elif ext in ['.png', '.jpg', '.jpeg']:
-        return extract_image(file_path)
+    
+    extraction_functions = {
+        '.pdf': extract_pdf,
+        '.docx': extract_word,
+        '.doc': extract_word,
+        '.xlsx': extract_excel,
+        '.xls': extract_excel,
+        '.png': extract_image,
+        '.jpg': extract_image,
+        '.jpeg': extract_image
+    }
+    
+    extract_func = extraction_functions.get(ext)
+    
+    if extract_func:
+        try:
+            text = extract_func(file_path)
+            # Normalize the extracted text to NFC form
+            return unicodedata.normalize('NFC', text)
+        except Exception as e:
+            logging.error(f"Error extracting text from {file_path}: {str(e)}")
     else:
-        return ''
+        logging.warning(f"Unsupported file type: {ext} for file {file_path}")
+    
+    return ''
 
 def extract_pdf(file_path):
     text = ""
@@ -86,12 +123,28 @@ def index_documents(index_obj, doc_dir):
             filename, extension = os.path.splitext(file)
             content = extract_text(file_path)
             if content:  # Only index if we successfully extracted content
+                print(f"Indexing: {file_path}")
+                print(f"Content: {content[:50]}")
+                print(f"Filename: {filename}")
                 writer.add_document(
-                    path=file_path,
-                    filename=filename,
-                    extension=extension,
-                    content=content
+                    path=f"{file_path}",
+                    filename=f"{filename}",
+                    extension=f"{extension}",
+                    content=f"{content}"
                 )
+                
+    writer.add_document(
+        path="/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported/2021-05-06 - 2021-05-06 - Test.pdf",
+        filename="čisto",
+        extension=".pdf",
+        content="This is a test document. čestitke čokolada"
+    )
+    writer.add_document(
+        path="/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported/2021-05-06 - 2021-05-06 - Test.pdf",
+        filename="Atijeva borovničeva torta",
+        extension=".pdf",
+        content="This is a test document. čestitke čokolada"
+    )
     writer.commit()
 
 def search_documents(index_obj, query_string):
@@ -126,7 +179,13 @@ def main():
         index_documents(index_obj, doc_dir)
         print("Indexing complete.")
     else:
-        index_obj = index.open_dir(index_dir)
+        os.rmdir(index_dir)
+        os.mkdir(index_dir)
+        index_obj = index.create_in(index_dir, schema)
+        # Re-index the documents with the new analyzer
+        print("Re-indexing documents with updated analyzer...")
+        index_documents(index_obj, doc_dir)
+        print("Re-indexing complete.")
     
     while True:
         query = input("Enter your search query (or 'q' to quit): ")
