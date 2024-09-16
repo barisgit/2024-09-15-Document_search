@@ -57,6 +57,7 @@ def apply_rules(word):
     return word
 
 def stem(word):
+    #print(f"Stemming: {word}")
     if len(word) <= 3:
         return word
 
@@ -70,6 +71,7 @@ def stem(word):
     if word.endswith('ah'):
         word = word[:-2]
     
+    #print(f"Stemmed: {word}")
     return word
 
 def stem_text(text):
