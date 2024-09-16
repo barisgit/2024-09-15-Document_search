@@ -226,39 +226,6 @@ def search_documents(index_obj, query_string):
         
         return search_results
 
-def main():
-    doc_dir = os.getenv('DOC_DIR')
-    index_dir = os.getenv('INDEX_DIR')
-    
-    schema = create_schema()
-    if not os.path.exists(index_dir):
-        os.mkdir(index_dir)
-        index_obj = index.create_in(index_dir, schema)
-        print("Indexing documents...")
-        index_documents(index_obj, doc_dir)
-        print("Indexing complete.")
-    else:
-        index_obj = index.open_dir(index_dir)
-        print("Incrementally indexing documents...")
-        incremental_index(index_obj, doc_dir)
-        print("Incremental indexing complete.")
-    
-    while True:
-        query = input("Enter your search query (or 'q' to quit): ")
-        if query.lower() == 'q':
-            break
-        print(f"Searching for: {query}")
-        results = search_documents(index_obj, query)
-        if results:
-            for result in results:
-                print(f"File: {result['filename']}")
-                print(f"Path: {result['path']}")
-                print(f"Language: {result['language']}")
-                print(f"Highlights: {result['highlights']}")
-                print(f"Score: {result['score']:.2f}\n")
-        else:
-            print("No results found.")
-
 def incremental_index(index_obj, doc_dir):
     writer = index_obj.writer()
 
@@ -301,30 +268,64 @@ def incremental_index(index_obj, doc_dir):
 
 def index_document(writer, file_path):
     filename, extension = os.path.splitext(os.path.basename(file_path))
-    content = extract_text(file_path)
-    if content:
-        try:
-            lang = detect(content)
-        except:
-            lang = 'unknown'
-        
-        if lang == 'unknown':
+    try:
+        content = extract_text(file_path)
+        if content:
             try:
-                lang = detect(filename)
+                lang = detect(content)
             except:
-                lang = 'unknown'
-        
-        normalized_content = unicodedata.normalize('NFC', content)
-        normalized_filename = unicodedata.normalize('NFC', filename)
-        
-        writer.add_document(
-            path=file_path,
-            filename=normalized_filename,
-            extension=extension,
-            content=normalized_content,
-            language=lang,
-            time=os.path.getmtime(file_path)
-        )
+                lang = detect(filename) if filename else 'unknown'
+            
+            normalized_content = unicodedata.normalize('NFC', content)
+            normalized_filename = unicodedata.normalize('NFC', filename)
+            
+            writer.add_document(
+                path=file_path,
+                filename=normalized_filename,
+                extension=extension,
+                content=normalized_content,
+                language=lang,
+                time=os.path.getmtime(file_path)
+            )
+            print(f"Successfully indexed: {file_path}")
+        else:
+            print(f"No content extracted from: {file_path}")
+    except Exception as e:
+        print(f"Error indexing {file_path}: {str(e)}")
+        logging.error(f"Error indexing {file_path}: {str(e)}", exc_info=True)
+
+def main():
+    doc_dir = os.getenv('DOC_DIR')
+    index_dir = os.getenv('INDEX_DIR')
+    
+    schema = create_schema()
+    if not os.path.exists(index_dir):
+        os.mkdir(index_dir)
+        index_obj = index.create_in(index_dir, schema)
+        print("Indexing documents...")
+        index_documents(index_obj, doc_dir)
+        print("Indexing complete.")
+    else:
+        index_obj = index.open_dir(index_dir)
+        print("Incrementally indexing documents...")
+        incremental_index(index_obj, doc_dir)
+        print("Incremental indexing complete.")
+    
+    while True:
+        query = input("Enter your search query (or 'q' to quit): ")
+        if query.lower() == 'q':
+            break
+        print(f"Searching for: {query}")
+        results = search_documents(index_obj, query)
+        if results:
+            for result in results:
+                print(f"File: {result['filename']}")
+                print(f"Path: {result['path']}")
+                print(f"Language: {result['language']}")
+                print(f"Highlights: {result['highlights']}")
+                print(f"Score: {result['score']:.2f}\n")
+        else:
+            print("No results found.")
 
 if __name__ == "__main__":
     main()
