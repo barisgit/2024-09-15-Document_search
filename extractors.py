@@ -37,10 +37,10 @@ def extract_text(file_path: str) -> str:
         '.jpeg': extract_image,
         '.mobi': "skip", # DOESN'T WORK YET
         '.epub': extract_epub,
-        '.mp3': "skip",
-        '.wav': "skip",
-        '.ogg': "skip",
-        '.flac': "skip",
+        '.mp3': extract_audio_text,
+        '.wav': extract_audio_text,
+        '.ogg': extract_audio_text,
+        '.flac': extract_audio_text,
     }
     extract_func = extraction_functions.get(ext)
     if extract_func == "skip":
@@ -173,7 +173,7 @@ def process_chunk(chunk, sample_rate):
 
     return result.get('text', '')
 
-def extract_audio_text(file_path, chunk_duration_ms=None, max_workers=1, timeout=60, max_duration=60, sample_rate=16000):
+def extract_audio_text(file_path, chunk_duration_ms=30000, max_duration:int=30, max_workers=5, timeout=60, sample_rate=16000):
     _, ext = os.path.splitext(file_path.lower())
     
     start_time = time.time()
@@ -184,22 +184,18 @@ def extract_audio_text(file_path, chunk_duration_ms=None, max_workers=1, timeout
         logger.info(f"Loading audio file: {file_path}")
         audio = AudioSegment.from_file(file_path, format=ext[1:])
         logger.info(f"Audio file loaded. Duration: {len(audio)/1000:.2f} seconds")
-        
-        # Limit audio duration
-        audio_duration_minutes = len(audio)/60000
-        if len(audio) > max_duration:
-            logger.info(f"Audio file too long. Truncating to {max_duration} minutes")
-            audio = audio[:max_duration * 60000]
-            audio_duration_minutes = max_duration
 
         # Downsample and convert to mono
         audio = audio.set_frame_rate(sample_rate).set_channels(1)
         
-        if chunk_duration_ms == None:
-            if audio_duration_minutes < 30:
-                chunk_duration_ms = min(3 * 60000, len(audio) // max_workers)
-            else:
-                chunk_duration_ms = min(5 * 60000, len(audio) // max_workers)
+        audio_duration_minutes = len(audio)/60000        
+        
+        if audio_duration_minutes <= max_duration:
+            skip = 1
+        else:
+            skip = audio_duration_minutes // max_duration
+            
+        print(f"Audio duration: {audio_duration_minutes} minutes. Skip: {skip}")
         
         # Split audio into chunks
         chunks = [audio[i:i+chunk_duration_ms] for i in range(0, len(audio), chunk_duration_ms)]
@@ -211,7 +207,9 @@ def extract_audio_text(file_path, chunk_duration_ms=None, max_workers=1, timeout
         if max_workers > 1:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
-                for chunk in chunks:
+                for i, chunk in enumerate(chunks):
+                    if i%skip != 0:
+                        continue
                     chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
                     futures.append(executor.submit(process_chunk, chunk_data.tobytes(), sample_rate))
                 
@@ -219,22 +217,24 @@ def extract_audio_text(file_path, chunk_duration_ms=None, max_workers=1, timeout
                     try:
                         result = future.result(timeout=timeout)
                         results.append(result)
-                        time_remaining = (time.time() - start) / (i + 1) * (len(chunks) - i - 1)
-                        logger.info(f"Processed chunk {i+1}/{len(chunks)}. Remaining time: {time_remaining:.2f} seconds")
+                        time_remaining = (time.time() - start) / (i + 1) * (len(futures) - i - 1)
+                        logger.info(f"Processed chunk {i+1}/{len(futures)}. Remaining time: {time_remaining:.2f} seconds")
                     except TimeoutError:
-                        logger.error(f"Timeout processing chunk {i+1}/{len(chunks)}")
+                        logger.error(f"Timeout processing chunk {i+1}/{len(futures)}")
                     except Exception as e:
-                        logger.error(f"Error processing chunk {i+1}/{len(chunks)}: {str(e)}")
+                        logger.error(f"Error processing chunk {i+1}/{len(futures)}: {str(e)}")
         else:
             for i, chunk in enumerate(chunks):
+                if i%skip != 0:
+                    continue
                 try:
                     chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
                     result = process_chunk(chunk_data.tobytes(), sample_rate)
                     results.append(result)
-                    time_remaining = (time.time() - start) / (i + 1) * (len(chunks) - i - 1)
-                    logger.info(f"Processed chunk {i+1}/{len(chunks)}. Remaining time: {time_remaining:.2f} seconds")
+                    time_remaining = (time.time() - start) / (i + 1) * (len(chunks)//skip - i - 1)
+                    logger.info(f"Processed chunk {i+1}/{len(chunks)//skip}. Remaining time: {time_remaining:.2f} seconds")
                 except Exception as e:
-                    logger.error(f"Error processing chunk {i+1}/{len(chunks)}: {str(e)}")
+                    logger.error(f"Error processing chunk {i+1}/{len(chunks)//skip}: {str(e)}")
 
         # Combine results
         text = ' '.join(results)
