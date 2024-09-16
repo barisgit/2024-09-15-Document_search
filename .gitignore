@@ -3,3 +3,5 @@ venv/
 index/
 .claudesync/
 .env
+__pycache__/
+*.pyc

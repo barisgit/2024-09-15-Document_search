@@ -12,3 +12,9 @@ six==1.16.0
 typing_extensions==4.12.2
 Whoosh-Reloaded==2.7.5
 langdetect==1.0.9
+beautifulsoup4==4.12.3
+EbookLib==0.18.0
+mobi==0.3.3
+colorlog==6.8.2
+pydub==0.25.1
+SpeechRecognition==3.10.4

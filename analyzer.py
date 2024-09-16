@@ -1,14 +1,9 @@
-from whoosh import index, fields, writing
 from whoosh.analysis import RegexTokenizer, LowercaseFilter, CharsetFilter, Token
-from whoosh.qparser import MultifieldParser, OrGroup, QueryParser
 from whoosh.analysis.morph import StemFilter
 from whoosh.lang.porter import stem as english_stem
-from whoosh.support.charset import default_charset, charset_table_to_dict
 from whoosh.analysis.tokenizers import default_pattern
 from whoosh.analysis.filters import StopFilter, STOP_WORDS
-from whoosh.util.text import rcompile
 from stemmers.slo import stem as slovenian_stem
-from langdetect import detect
 
 class MultiLingualStemFilter(StemFilter):
     def __init__(self, stemfn=None, ignore=None, cachesize=10000):

@@ -1,10 +1,24 @@
 import os
 from whoosh import index, fields, writing
 from whoosh.qparser import MultifieldParser
-from whoosh.util.text import rcompile
 from langdetect import detect
 from extractors import extract_text
 import unicodedata
+from analyzer import MultiLingualAnalyzer
+from logging_setup import logger
+
+def create_schema():
+    my_analyzer = MultiLingualAnalyzer()
+
+    return fields.Schema(
+        path=fields.ID(stored=True, unique=True, sortable=True),
+        filename=fields.TEXT(stored=True, analyzer=my_analyzer),
+        extension=fields.TEXT(stored=True),
+        content=fields.TEXT(stored=True, analyzer=my_analyzer),
+        language=fields.TEXT(stored=True),
+        skipped=fields.BOOLEAN(stored=True),
+        time=fields.STORED
+    )
 
 def index_documents(index_obj, doc_dir, delete=False):
     if delete:
@@ -40,53 +54,51 @@ def index_documents(index_obj, doc_dir, delete=False):
                 if file_path in to_index or file_path not in indexed_paths:
                     filename, extension = os.path.splitext(file)
                     content = extract_text(file_path)
-                    if content:
-                        print(f"Indexing: {file_path}")
+                    skipped = False
+                    if not content:
+                        skipped = True
                         
+                    logger.info(f"Indexing: {file}")
+                    
+                    try:
+                        lang = detect(content)
+                    except:
                         try:
-                            lang = detect(content)
+                            lang = detect(filename)
                         except:
-                            try:
-                                lang = detect(filename)
-                            except:
-                                lang = 'unknown'
-                        
-                        normalized_content = unicodedata.normalize('NFC', content)
-                        normalized_filename = unicodedata.normalize('NFC', filename)
-                        
-                        if False:
-                            print(f"Adding document: {normalized_filename}{extension}")
-                            print(f"Language: {lang}")
-                            print(f"Content: {normalized_content[:100]}...")
-                            print("--------------------")
-                        
-                        writer.add_document(
-                            path=file_path,
-                            filename=normalized_filename,
-                            extension=extension,
-                            content=normalized_content,
-                            language=lang,
-                            time=os.path.getmtime(file_path)
-                        )
-                    else:
-                        print(f"No content extracted from: {file_path}")
+                            lang = 'unknown'
+                    
+                    normalized_content = unicodedata.normalize('NFC', content)
+                    normalized_filename = unicodedata.normalize('NFC', filename)
+                    
+                    logger.debug(f"Adding document: {normalized_filename}{extension}")
+                    logger.debug(f"Language: {lang}")
+                    logger.debug(f"Content: {normalized_content[:100]}...")
+                    
+                    writer.add_document(
+                        path=file_path,
+                        filename=normalized_filename,
+                        extension=extension,
+                        content=normalized_content,
+                        language=lang,
+                        skipped=skipped,
+                        time=os.path.getmtime(file_path)
+                    )
 
-    print("Indexing complete.")
+    logger.info("Indexing complete.")
 
 def search_documents(index_obj, query_string):
     with index_obj.searcher() as searcher:
-        # Use MultifieldParser to search in both content and filename
         fields = ["content", "filename"]
         query_parser = MultifieldParser(fields, schema=index_obj.schema)
         query = query_parser.parse(query_string)
                 
         results = searcher.search(query, limit=None)
         
-        print(f"Number of results: {len(results)}")
+        logger.info(f"Number of results: {len(results)}")
         
         search_results = []
         for result in results:
-            # Try to get highlights from content first, then filename
             highlights = result.highlights("content") or result.highlights("filename") or "No highlights available"
             search_results.append({
                 "path": result["path"],
@@ -97,3 +109,20 @@ def search_documents(index_obj, query_string):
             })
         
         return search_results
+    
+def get_all_documents(index_obj):
+    with index_obj.searcher() as searcher:
+        return [dict(doc) for doc in searcher.all_stored_fields()]
+
+def get_indexed_terms(index_obj, field_name):
+    with index_obj.searcher() as searcher:
+        return list(searcher.lexicon(field_name))
+
+def get_document_terms(index_obj, doc_path, field_name):
+    with index_obj.searcher() as searcher:
+        doc = searcher.document(path=doc_path)
+        if doc and field_name in doc:
+            content = doc[field_name]
+            analyzer = index_obj.schema[field_name].analyzer
+            return [token.text for token in analyzer(content)]
+    return []
