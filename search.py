@@ -2,7 +2,7 @@ import os
 from whoosh import index, fields, writing
 from whoosh.qparser import MultifieldParser
 from langdetect import detect
-from extractors import extract_text
+from extractors import extract_text, audio_files_queue, process_audio_queue
 import unicodedata
 from analyzer import MultiLingualAnalyzer
 from logging_setup import logger
@@ -85,6 +85,32 @@ def index_documents(index_obj, doc_dir, delete=False):
                         time=os.path.getmtime(file_path)
                     )
 
+    logger.info("Audio files queue: {}".format(audio_files_queue))
+    
+    # Process audio files in the queue
+    while audio_files_queue:
+        results = process_audio_queue()
+        with index_obj.writer() as writer:
+            for file_path, text in results.items():
+                logger.debug(f"Processed {file_path}: {text[:100]}...")
+                filename, extension = os.path.splitext(os.path.basename(file_path))
+                normalized_content = unicodedata.normalize('NFC', text)
+                normalized_filename = unicodedata.normalize('NFC', filename)
+                try:
+                    lang = detect(text)
+                except:
+                    lang = 'unknown'
+                
+                writer.update_document(
+                    path=file_path,
+                    filename=normalized_filename,
+                    extension=extension,
+                    content=normalized_content,
+                    language=lang,
+                    skipped=False,
+                    time=os.path.getmtime(file_path)
+                )
+            
     logger.info("Indexing complete.")
 
 def search_documents(index_obj, query_string):

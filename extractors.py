@@ -16,7 +16,7 @@ from logging_setup import logger
 import speech_recognition as sr
 from pydub import AudioSegment
 import json
-from vosk import Model, KaldiRecognizer, SetLogLevel
+from vosk import Model, KaldiRecognizer, SetLogLevel, BatchRecognizer, BatchModel, GpuInit
 import wave
 from langdetect import detect
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -145,6 +145,7 @@ def extract_epub(file_path):
 # Global variable to store the Vosk model
 vosk_model = None
 model_lock = threading.Lock()
+audio_files_queue = []
 
 def load_vosk_model(model_path="vosk-model-small-en-us-0.15"):
     global vosk_model
@@ -158,7 +159,7 @@ def load_vosk_model(model_path="vosk-model-small-en-us-0.15"):
             logger.info("Vosk model loaded successfully")
     return vosk_model
 
-def process_chunk(chunk, sample_rate):
+def process_audio_chunk(chunk, sample_rate):
     model = load_vosk_model()
     if model is None:
         return "Vosk model not loaded"
@@ -173,15 +174,29 @@ def process_chunk(chunk, sample_rate):
 
     return result.get('text', '')
 
-def extract_audio_text(file_path, chunk_duration_ms=30000, max_duration:int=30, max_workers=5, timeout=60, sample_rate=16000):
+def extract_audio_text(file_path):
+    global audio_files_queue
+    filename = os.path.basename(file_path)
+    print(f"Extracting text from audio file: {filename}")
+    try:
+        lang = detect(filename)
+    except:
+        lang = "unknown"
+        
+    if lang != 'en':
+        logger.warning(f"Unsupported language: {lang} for audio file {filename}. Skipping.")
+        return " "
+    
+    audio_files_queue.append(file_path)
+    return ""
+
+def process_audio_file(file_path, chunk_duration_ms=60000, max_duration=30, max_workers=3, sample_rate=16000):
     _, ext = os.path.splitext(file_path.lower())
     
-    start_time = time.time()
-    logger.info(f"Starting to process {file_path}")
+    logger.info(f"Processing audio file: {file_path}")
 
     try:
         # Load audio file
-        logger.info(f"Loading audio file: {file_path}")
         audio = AudioSegment.from_file(file_path, format=ext[1:])
         logger.info(f"Audio file loaded. Duration: {len(audio)/1000:.2f} seconds")
 
@@ -193,9 +208,9 @@ def extract_audio_text(file_path, chunk_duration_ms=30000, max_duration:int=30, 
         if audio_duration_minutes <= max_duration:
             skip = 1
         else:
-            skip = audio_duration_minutes // max_duration
+            skip = int(audio_duration_minutes // max_duration)
             
-        print(f"Audio duration: {audio_duration_minutes} minutes. Skip: {skip}")
+        logger.info(f"Audio duration: {audio_duration_minutes:.2f} minutes. Skip: {skip}")
         
         # Split audio into chunks
         chunks = [audio[i:i+chunk_duration_ms] for i in range(0, len(audio), chunk_duration_ms)]
@@ -204,50 +219,56 @@ def extract_audio_text(file_path, chunk_duration_ms=30000, max_duration:int=30, 
         # Process chunks concurrently
         results = []
         start = time.time()
-        if max_workers > 1:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for i, chunk in enumerate(chunks):
-                    if i%skip != 0:
-                        continue
-                    chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
-                    futures.append(executor.submit(process_chunk, chunk_data.tobytes(), sample_rate))
-                
-                for i, future in enumerate(as_completed(futures)):
-                    try:
-                        result = future.result(timeout=timeout)
-                        results.append(result)
-                        time_remaining = (time.time() - start) / (i + 1) * (len(futures) - i - 1)
-                        logger.info(f"Processed chunk {i+1}/{len(futures)}. Remaining time: {time_remaining:.2f} seconds")
-                    except TimeoutError:
-                        logger.error(f"Timeout processing chunk {i+1}/{len(futures)}")
-                    except Exception as e:
-                        logger.error(f"Error processing chunk {i+1}/{len(futures)}: {str(e)}")
-        else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
             for i, chunk in enumerate(chunks):
-                if i%skip != 0:
+                if i % skip != 0:
                     continue
+                chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
+                futures.append(executor.submit(process_audio_chunk, chunk_data.tobytes(), sample_rate))
+            
+            for i, future in enumerate(as_completed(futures)):
                 try:
-                    chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
-                    result = process_chunk(chunk_data.tobytes(), sample_rate)
+                    result = future.result()
                     results.append(result)
-                    time_remaining = (time.time() - start) / (i + 1) * (len(chunks)//skip - i - 1)
-                    logger.info(f"Processed chunk {i+1}/{len(chunks)//skip}. Remaining time: {time_remaining:.2f} seconds")
+                    time_remaining = (time.time() - start) / (i + 1) * (len(futures) - i - 1)
+                    logger.info(f"Processed chunk {i+1}/{len(futures)}. Remaining time: {time_remaining:.2f} seconds")
                 except Exception as e:
-                    logger.error(f"Error processing chunk {i+1}/{len(chunks)//skip}: {str(e)}")
+                    logger.error(f"Error processing chunk {i+1}/{len(futures)}: {str(e)}")
 
         # Combine results
         text = ' '.join(results)
         logger.info(f"Audio processing completed. Extracted text length: {len(text)} characters")
-
-        end_time = time.time()
-        logger.info(f"Total processing time: {end_time - start_time:.2f} seconds")
 
         return text
 
     except Exception as e:
         logger.error(f"Error processing audio file {file_path}: {str(e)}")
         return ""
+
+def process_audio_queue(max_workers=3):
+    global audio_files_queue
+    
+    if not audio_files_queue:
+        logger.info("No audio files in the queue to process.")
+        return
+
+    logger.info(f"Processing {len(audio_files_queue)} audio files from the queue.")
+    
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_file = {executor.submit(process_audio_file, file_path): file_path for file_path in audio_files_queue}
+        for future in as_completed(future_to_file):
+            file_path = future_to_file[future]
+            try:
+                text = future.result()
+                results[file_path] = text
+                logger.info(f"Processed {file_path}: {text[:100]}...")  # Print first 100 characters of each result
+            except Exception as e:
+                logger.error(f"Error processing {file_path}: {str(e)}")
+    
+    audio_files_queue.clear()
+    return results
 
 def sanitize_filename(filename):
     return ''.join(c for c in filename if c.isalnum() or c in ('-', '_')).rstrip()
