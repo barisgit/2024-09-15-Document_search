@@ -18,3 +18,4 @@ mobi==0.3.3
 colorlog==6.8.2
 pydub==0.25.1
 SpeechRecognition==3.10.4
+vosk==0.3.44

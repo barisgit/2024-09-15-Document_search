@@ -13,6 +13,16 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 import mobi
 from logging_setup import logger
+import speech_recognition as sr
+from pydub import AudioSegment
+import json
+from vosk import Model, KaldiRecognizer, SetLogLevel
+import wave
+from langdetect import detect
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import numpy as np
+import time
 
 def extract_text(file_path: str) -> str:
     _, ext = os.path.splitext(file_path.lower())
@@ -25,10 +35,17 @@ def extract_text(file_path: str) -> str:
         '.png': extract_image,
         '.jpg': extract_image,
         '.jpeg': extract_image,
-        #'.mobi': extract_mobi, # DOESN'T WORK YET
-        '.epub': extract_epub
+        '.mobi': "skip", # DOESN'T WORK YET
+        '.epub': extract_epub,
+        '.mp3': "skip",
+        '.wav': "skip",
+        '.ogg': "skip",
+        '.flac': "skip",
     }
     extract_func = extraction_functions.get(ext)
+    if extract_func == "skip":
+        return ''
+    
     if extract_func:
         with ThreadPoolExecutor() as executor:
             future = executor.submit(extract_func, file_path)
@@ -124,6 +141,113 @@ def extract_epub(file_path):
     except Exception as e:
         logger.error(f"Error extracting EPUB file {file_path}: {str(e)}")
         return ""
+    
+# Global variable to store the Vosk model
+vosk_model = None
+model_lock = threading.Lock()
+
+def load_vosk_model(model_path="vosk-model-small-en-us-0.15"):
+    global vosk_model
+    with model_lock:
+        if vosk_model is None:
+            if not os.path.exists(model_path):
+                logger.error(f"Vosk model not found. Please download it from https://alphacephei.com/vosk/models and extract to {model_path}")
+                return None
+            logger.info(f"Loading Vosk model from {model_path}")
+            vosk_model = Model(model_path)
+            logger.info("Vosk model loaded successfully")
+    return vosk_model
+
+def process_chunk(chunk, sample_rate):
+    model = load_vosk_model()
+    if model is None:
+        return "Vosk model not loaded"
+
+    rec = KaldiRecognizer(model, sample_rate)
+    rec.SetWords(True)
+
+    if rec.AcceptWaveform(chunk):
+        result = json.loads(rec.Result())
+    else:
+        result = json.loads(rec.FinalResult())
+
+    return result.get('text', '')
+
+def extract_audio_text(file_path, chunk_duration_ms=None, max_workers=1, timeout=60, max_duration=60, sample_rate=16000):
+    _, ext = os.path.splitext(file_path.lower())
+    
+    start_time = time.time()
+    logger.info(f"Starting to process {file_path}")
+
+    try:
+        # Load audio file
+        logger.info(f"Loading audio file: {file_path}")
+        audio = AudioSegment.from_file(file_path, format=ext[1:])
+        logger.info(f"Audio file loaded. Duration: {len(audio)/1000:.2f} seconds")
+        
+        # Limit audio duration
+        audio_duration_minutes = len(audio)/60000
+        if len(audio) > max_duration:
+            logger.info(f"Audio file too long. Truncating to {max_duration} minutes")
+            audio = audio[:max_duration * 60000]
+            audio_duration_minutes = max_duration
+
+        # Downsample and convert to mono
+        audio = audio.set_frame_rate(sample_rate).set_channels(1)
+        
+        if chunk_duration_ms == None:
+            if audio_duration_minutes < 30:
+                chunk_duration_ms = min(3 * 60000, len(audio) // max_workers)
+            else:
+                chunk_duration_ms = min(5 * 60000, len(audio) // max_workers)
+        
+        # Split audio into chunks
+        chunks = [audio[i:i+chunk_duration_ms] for i in range(0, len(audio), chunk_duration_ms)]
+        logger.info(f"Audio split into {len(chunks)} chunks of {chunk_duration_ms}ms each")
+
+        # Process chunks concurrently
+        results = []
+        start = time.time()
+        if max_workers > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = []
+                for chunk in chunks:
+                    chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
+                    futures.append(executor.submit(process_chunk, chunk_data.tobytes(), sample_rate))
+                
+                for i, future in enumerate(as_completed(futures)):
+                    try:
+                        result = future.result(timeout=timeout)
+                        results.append(result)
+                        time_remaining = (time.time() - start) / (i + 1) * (len(chunks) - i - 1)
+                        logger.info(f"Processed chunk {i+1}/{len(chunks)}. Remaining time: {time_remaining:.2f} seconds")
+                    except TimeoutError:
+                        logger.error(f"Timeout processing chunk {i+1}/{len(chunks)}")
+                    except Exception as e:
+                        logger.error(f"Error processing chunk {i+1}/{len(chunks)}: {str(e)}")
+        else:
+            for i, chunk in enumerate(chunks):
+                try:
+                    chunk_data = np.frombuffer(chunk.raw_data, dtype=np.int16)
+                    result = process_chunk(chunk_data.tobytes(), sample_rate)
+                    results.append(result)
+                    time_remaining = (time.time() - start) / (i + 1) * (len(chunks) - i - 1)
+                    logger.info(f"Processed chunk {i+1}/{len(chunks)}. Remaining time: {time_remaining:.2f} seconds")
+                except Exception as e:
+                    logger.error(f"Error processing chunk {i+1}/{len(chunks)}: {str(e)}")
+
+        # Combine results
+        text = ' '.join(results)
+        logger.info(f"Audio processing completed. Extracted text length: {len(text)} characters")
+
+        end_time = time.time()
+        logger.info(f"Total processing time: {end_time - start_time:.2f} seconds")
+
+        return text
+
+    except Exception as e:
+        logger.error(f"Error processing audio file {file_path}: {str(e)}")
+        return ""
 
 def sanitize_filename(filename):
     return ''.join(c for c in filename if c.isalnum() or c in ('-', '_')).rstrip()
@@ -144,3 +268,7 @@ def process_files(directory):
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(text)
                 logger.info(f"Extracted text saved to: {output_path}")
+                
+if __name__ == '__main__':
+    text = extract_audio_text('/Users/blaz/Library/CloudStorage/OneDrive-Personal/Dokumenti/[01] Imported/Avdioknjige/Getting Things Done.mp3')
+    print(text)
