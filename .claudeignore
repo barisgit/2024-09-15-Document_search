@@ -27,3 +27,6 @@ ENV/
 *.log
 .DS_Store
 secrets.py
+
+Frontend/document_searcher_frontend/*
+!Frontend/document_searcher_frontend/lib

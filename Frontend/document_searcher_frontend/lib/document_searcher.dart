@@ -23,7 +23,7 @@ class _DocumentSearcherState extends State<DocumentSearcher> {
   Future<void> _initializeBaseUrl() async {
     String host = 'localhost';
     if (Platform.isAndroid) {
-      host = '10.0.2.2';
+      host = '10.0.2.2'; // Special IP for Android emulator
     } else if (Platform.isIOS) {
       try {
         for (var interface in await NetworkInterface.list()) {
@@ -72,7 +72,7 @@ class _DocumentSearcherState extends State<DocumentSearcher> {
 
       if (response.statusCode == 200) {
         setState(() {
-          _searchResults = jsonDecode(response.body);
+          _searchResults = jsonDecode(utf8.decode(response.bodyBytes));
           _isLoading = false;
         });
       } else {
@@ -84,7 +84,9 @@ class _DocumentSearcherState extends State<DocumentSearcher> {
         _isLoading = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('An error occurred while searching. Please try again.')),
+        SnackBar(
+            content:
+                Text('An error occurred while searching. Please try again.')),
       );
     }
   }
@@ -118,9 +120,20 @@ class _DocumentSearcherState extends State<DocumentSearcher> {
                     itemBuilder: (context, index) {
                       final result = _searchResults[index];
                       return ListTile(
-                        title: Text(result['filename']),
-                        subtitle: Text(result['path']),
-                        trailing: Chip(label: Text(result['language'])),
+                        title: Text(
+                          result['filename'],
+                          style: TextStyle(fontFamily: 'Roboto'),
+                        ),
+                        subtitle: Text(
+                          result['path'],
+                          style: TextStyle(fontFamily: 'Roboto'),
+                        ),
+                        trailing: Chip(
+                          label: Text(
+                            result['language'],
+                            style: TextStyle(fontFamily: 'Roboto'),
+                          ),
+                        ),
                       );
                     },
                   ),
